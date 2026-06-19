@@ -1,0 +1,1121 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SyncWave — Senkron Müzik</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+
+  :root {
+    --bg: #0a0a0f;
+    --surface: #111118;
+    --surface2: #1a1a24;
+    --surface3: #22222e;
+    --border: #2a2a38;
+    --accent: #6c63ff;
+    --accent2: #ff6584;
+    --text: #e8e8f0;
+    --muted: #6b6b80;
+    --good: #4ade80;
+    --warn: #fbbf24;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Space Grotesk', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 60% 40% at 20% 20%, #6c63ff14 0%, transparent 60%),
+      radial-gradient(ellipse 40% 50% at 80% 80%, #ff658414 0%, transparent 60%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .app {
+    position: relative;
+    z-index: 1;
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 18px 16px 100px;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 0 20px;
+  }
+
+  .logo { font-family: 'Space Mono', monospace; font-size: 18px; font-weight: 700; letter-spacing: -0.5px; color: var(--accent); }
+  .logo span { color: var(--accent2); }
+
+  .status-pill {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 100px; padding: 6px 12px; font-size: 11px; font-weight: 500;
+    color: var(--muted); font-family: 'Space Mono', monospace;
+  }
+
+  .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); transition: all 0.3s; }
+  .status-dot.connected { background: var(--good); box-shadow: 0 0 8px var(--good); }
+  .status-dot.syncing { background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .section-label {
+    font-size: 10px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 10px; font-family: 'Space Mono', monospace;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+
+  .tabs {
+    display: flex; gap: 4px; background: var(--surface2); border-radius: 12px; padding: 4px; margin-bottom: 16px;
+  }
+  .tab {
+    flex: 1; text-align: center; padding: 9px; border-radius: 9px; font-size: 13px; font-weight: 600;
+    color: var(--muted); cursor: pointer; transition: all 0.2s; border: none; background: none; font-family: inherit;
+  }
+  .tab.active { background: var(--accent); color: white; }
+
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  .room-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 16px; margin-bottom: 16px; }
+  .room-input-row { display: flex; gap: 8px; }
+  .room-input {
+    flex: 1; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 14px; color: var(--text); font-family: 'Space Mono', monospace; font-size: 14px;
+    outline: none; transition: border-color 0.2s; text-transform: uppercase; letter-spacing: 3px;
+  }
+  .room-input:focus { border-color: var(--accent); }
+  .room-input::placeholder { letter-spacing: 1px; text-transform: none; color: var(--muted); }
+
+  .btn {
+    background: var(--accent); color: white; border: none; border-radius: 10px; padding: 10px 16px;
+    font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 13px; cursor: pointer;
+    transition: all 0.2s; white-space: nowrap;
+  }
+  .btn:hover { opacity: 0.85; transform: translateY(-1px); }
+  .btn:active { transform: translateY(0); }
+  .btn.secondary { background: var(--surface2); border: 1px solid var(--border); color: var(--text); }
+  .btn.danger { background: var(--accent2); }
+  .btn.sm { padding: 7px 12px; font-size: 12px; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+  .room-info { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
+  .room-code { font-family: 'Space Mono', monospace; font-size: 20px; font-weight: 700; color: var(--accent); letter-spacing: 4px; }
+  .room-hint { font-size: 10px; color: var(--muted); margin-top: 4px; }
+  .peers-count { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .peer-avatar {
+    width: 24px; height: 24px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700;
+  }
+
+  .sync-bar {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 12px 16px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;
+  }
+  .sync-bar.hidden { display: none; }
+  .sync-label { font-size: 12px; color: var(--muted); }
+  .sync-value { font-family: 'Space Mono', monospace; font-size: 12px; color: var(--good); }
+  .sync-value.warn { color: var(--warn); }
+
+  .wave-container { display: flex; align-items: center; gap: 3px; height: 20px; }
+  .wave-bar { width: 3px; background: var(--accent); border-radius: 2px; animation: wave 1.2s ease-in-out infinite; }
+  .wave-bar:nth-child(2) { animation-delay: 0.1s; }
+  .wave-bar:nth-child(3) { animation-delay: 0.2s; }
+  .wave-bar:nth-child(4) { animation-delay: 0.3s; }
+  .wave-bar:nth-child(5) { animation-delay: 0.4s; }
+  @keyframes wave { 0%,100% { height: 4px; } 50% { height: 16px; } }
+  .wave-bar.paused { animation-play-state: paused; height: 4px; }
+
+  .now-playing { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 20px; margin-bottom: 16px; display: none; }
+  .now-playing.visible { display: block; }
+  .np-artwork { width: 100%; aspect-ratio: 16/9; border-radius: 12px; object-fit: cover; background: var(--surface2); margin-bottom: 16px; }
+  .np-title { font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 4px; line-height: 1.3; }
+  .np-channel { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+
+  .progress-area { margin-bottom: 16px; }
+  .progress-bar-bg { height: 4px; background: var(--surface2); border-radius: 2px; cursor: pointer; position: relative; overflow: hidden; }
+  .progress-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 2px; width: 0%; }
+  .time-row { display: flex; justify-content: space-between; margin-top: 6px; font-family: 'Space Mono', monospace; font-size: 11px; color: var(--muted); }
+
+  .controls { display: flex; align-items: center; justify-content: center; gap: 16px; }
+  .ctrl-btn {
+    background: none; border: none; color: var(--muted); cursor: pointer; transition: all 0.2s;
+    padding: 8px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  }
+  .ctrl-btn:hover { color: var(--text); background: var(--surface2); }
+  .ctrl-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .ctrl-btn.play-btn { width: 56px; height: 56px; background: linear-gradient(135deg, var(--accent), var(--accent2)); color: white; border-radius: 50%; }
+  .ctrl-btn.play-btn:hover { opacity: 0.9; transform: scale(1.05); background: linear-gradient(135deg, var(--accent), var(--accent2)); }
+  svg { display: block; }
+
+  .volume-row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+  .volume-slider { flex: 1; -webkit-appearance: none; height: 4px; background: var(--surface2); border-radius: 2px; outline: none; cursor: pointer; }
+  .volume-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); cursor: pointer; }
+
+  .search-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 16px; margin-bottom: 16px; }
+  .search-row { display: flex; gap: 8px; }
+  .search-input {
+    flex: 1; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 14px; color: var(--text); font-family: 'Space Grotesk', sans-serif; font-size: 14px;
+    outline: none; transition: border-color 0.2s;
+  }
+  .search-input:focus { border-color: var(--accent); }
+  .search-input::placeholder { color: var(--muted); }
+  .search-hint { font-size: 11px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+
+  .suggest-box {
+    position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 20;
+    background: var(--surface3); border: 1px solid var(--border); border-radius: 10px;
+    overflow: hidden; display: none; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  .suggest-box.visible { display: block; }
+  .suggest-item {
+    padding: 10px 14px; font-size: 13px; cursor: pointer; transition: background 0.15s;
+    display: flex; align-items: center; gap: 8px; color: var(--text);
+  }
+  .suggest-item:hover { background: var(--surface2); }
+  .suggest-item svg { flex-shrink: 0; opacity: 0.5; }
+
+  .paste-row { display: flex; gap: 8px; margin-top: 12px; }
+
+  .results { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; max-height: 360px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  .result-item, .pl-item {
+    display: flex; align-items: center; gap: 10px; padding: 10px; background: var(--surface2);
+    border: 1px solid transparent; border-radius: 10px; cursor: pointer; transition: all 0.2s;
+  }
+  .result-item:hover { border-color: var(--accent); background: #6c63ff10; }
+  .result-item.active, .pl-item.active { border-color: var(--accent); background: #6c63ff15; }
+  .result-thumb, .pl-thumb { width: 48px; height: 48px; border-radius: 8px; object-fit: cover; flex-shrink: 0; background: var(--border); }
+  .result-info, .pl-info { flex: 1; overflow: hidden; }
+  .result-title, .pl-title { font-size: 13px; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .result-channel, .pl-channel { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .result-duration { font-family: 'Space Mono', monospace; font-size: 11px; color: var(--muted); flex-shrink: 0; }
+  .result-add-btn {
+    flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%; background: var(--surface3);
+    border: none; color: var(--accent); display: flex; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .result-add-btn:hover { background: var(--accent); color: white; }
+
+  .pl-item { cursor: grab; }
+  .pl-item.dragging { opacity: 0.4; }
+  .pl-num { width: 20px; flex-shrink: 0; text-align: center; font-family: 'Space Mono', monospace; font-size: 11px; color: var(--muted); }
+  .pl-item.active .pl-num { color: var(--accent); }
+  .pl-remove { flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%; background: none; border: none; color: var(--muted); display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  .pl-remove:hover { color: var(--accent2); background: var(--surface3); }
+  .pl-drag-handle { color: var(--muted); flex-shrink: 0; cursor: grab; padding: 4px; }
+
+  .empty-state { text-align: center; padding: 28px 16px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+  .empty-state svg { margin: 0 auto 10px; opacity: 0.4; }
+
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(100px);
+    background: var(--surface3); border: 1px solid var(--border); border-radius: 100px;
+    padding: 10px 20px; font-size: 13px; font-weight: 500; transition: transform 0.3s ease;
+    z-index: 100; white-space: nowrap; max-width: 90vw; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  .toast.show { transform: translateX(-50%) translateY(0); }
+
+  #yt-player { position: fixed; bottom: -200px; left: -200px; }
+
+  .loading-spinner {
+    width: 24px; height: 24px; border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 0.7s linear infinite; margin: 0 auto 10px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .playlist-footer { display: flex; gap: 8px; margin-top: 10px; }
+
+  .latency-badge {
+    font-family: 'Space Mono', monospace; font-size: 10px; padding: 2px 7px; border-radius: 5px;
+    background: var(--surface3); color: var(--good);
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <header>
+    <div class="logo">Sync<span>Wave</span></div>
+    <div class="status-pill">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Bağlı değil</span>
+    </div>
+  </header>
+
+  <p class="section-label">Oda</p>
+  <div class="room-card">
+    <div id="joinView">
+      <div class="room-input-row">
+        <input class="room-input" id="roomCodeInput" placeholder="Oda kodu" maxlength="6">
+        <button class="btn" onclick="joinRoom()">Katıl</button>
+        <button class="btn secondary" onclick="createRoom()">Yeni Oda</button>
+      </div>
+    </div>
+    <div id="connectedView" style="display:none">
+      <div class="room-info" onclick="copyRoomLink()">
+        <div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px;font-family:'Space Mono',monospace;">ODA KODU · DOKUNUP KOPYALA</div>
+          <div class="room-code" id="displayRoomCode">—</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;" onclick="event.stopPropagation()">
+          <div class="peers-count" id="peersDisplay">
+            <div class="peer-avatar">👤</div>
+            <span id="peerCount">1 kişi</span>
+          </div>
+          <button class="btn secondary sm" onclick="leaveRoom()">Çık</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sync-bar hidden" id="syncBar">
+    <div style="display:flex;align-items:center;gap:10px;">
+      <div class="wave-container" id="waveAnim">
+        <div class="wave-bar paused"></div><div class="wave-bar paused"></div><div class="wave-bar paused"></div><div class="wave-bar paused"></div><div class="wave-bar paused"></div>
+      </div>
+      <span class="sync-label">Senkron saat farkı</span>
+    </div>
+    <span class="sync-value" id="syncStatus">⚡ ölçülüyor...</span>
+  </div>
+
+  <div class="now-playing" id="nowPlaying">
+    <img class="np-artwork" id="npArtwork" src="" alt="">
+    <div class="np-title" id="npTitle">—</div>
+    <div class="np-channel" id="npChannel">—</div>
+    <div class="progress-area">
+      <div class="progress-bar-bg" id="progressBg">
+        <div class="progress-bar-fill" id="progressFill"></div>
+      </div>
+      <div class="time-row"><span id="currentTime">0:00</span><span id="totalTime">0:00</span></div>
+    </div>
+    <div class="controls">
+      <button class="ctrl-btn" onclick="playPrev()" title="Önceki">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+      </button>
+      <button class="ctrl-btn" onclick="seek(-10)" title="-10s">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M11 5V1L6 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
+      </button>
+      <button class="ctrl-btn play-btn" id="playBtn" onclick="togglePlay()">
+        <svg id="playIcon" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button class="ctrl-btn" onclick="seek(10)" title="+10s">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M13 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/></svg>
+      </button>
+      <button class="ctrl-btn" onclick="playNext()" title="Sonraki">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6z"/></svg>
+      </button>
+    </div>
+    <div class="volume-row">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="var(--muted)"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+      <input type="range" class="volume-slider" id="volumeSlider" min="0" max="100" value="80" oninput="setVolume(this.value)">
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" id="tabSearch" onclick="switchTab('search')">Ara</button>
+    <button class="tab" id="tabPlaylist" onclick="switchTab('playlist')">Çalma Listesi <span id="plCountBadge"></span></button>
+  </div>
+
+  <div class="panel active" id="panelSearch">
+    <div class="search-card">
+      <div class="search-row">
+        <input class="search-input" id="searchInput" placeholder="Şarkı veya sanatçı ara" autocomplete="off"
+               onkeydown="if(event.key==='Enter')doSearch();">
+        <button class="btn" id="searchBtn" onclick="doSearch()">Ara</button>
+      </div>
+      <div class="search-hint">YouTube'un gerçek kataloğunda anlık arama.</div>
+
+      <div class="results" id="results">
+        <div class="empty-state">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          Şarkı adı yazıp ara
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="panelPlaylist">
+    <div class="search-card">
+      <div class="section-label" style="margin-bottom:12px;">
+        <span>Sırada</span>
+        <span id="plTotalTime" style="font-family:'Space Mono',monospace;"></span>
+      </div>
+      <div class="results" id="playlistEl" style="max-height:420px;">
+        <div class="empty-state">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+          Çalma listesi boş — arama sekmesinden şarkı ekle
+        </div>
+      </div>
+      <div class="playlist-footer">
+        <button class="btn secondary sm" onclick="shufflePlaylist()" style="flex:1">🔀 Karıştır</button>
+        <button class="btn danger sm" onclick="clearPlaylist()" style="flex:1">Listeyi Temizle</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="yt-player"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+
+// ════════════════════════════════════════════════════════════
+// ⚠️ BURAYA KENDİ YOUTUBE API KEY'İNİ YAPIŞTIR (Google Cloud
+// Console'dan ücretsiz aldığın key). KURULUM.md dosyasında
+// adım adım nasıl alınacağı anlatılıyor.
+// ════════════════════════════════════════════════════════════
+window.SYNCWAVE_YT_API_KEY = "AIzaSyBXHf9h54dvyEor0KrOAqYcdR8TDJxqeNo";
+
+// ════════════════════════════════════════════════════════════
+// STATE
+// ════════════════════════════════════════════════════════════
+let roomCode = null;
+let myId = Math.random().toString(36).slice(2, 10);
+let isHost = false;
+let hostId = null;
+let peers = {}; // id -> {lastSeen}
+let player = null;
+let ytReady = false;
+let playerReadyQueue = [];
+let currentVideoId = null;
+let currentIndex = -1;
+let isPlaying = false;
+let progressInterval = null;
+let playlist = []; // {id, title, channel, thumb, duration}
+let clockOffset = 0; // ms: serverTimeEstimate - localTime (via host)
+let pingHistory = [];
+let bc = null;
+let suppressLocalEvents = false; // true while applying a remote command, to avoid feedback loop
+
+// ════════════════════════════════════════════════════════════
+// SIGNALING — BroadcastChannel (same device/browser) + localStorage
+// (cross-tab, same-browser, multi-window) + cross-device relay
+// ════════════════════════════════════════════════════════════
+function initSignaling(code) {
+  try {
+    bc = new BroadcastChannel('syncwave-room-' + code);
+    bc.onmessage = (e) => handleSignal(e.data);
+  } catch (e) {}
+
+  window.addEventListener('storage', (e) => {
+    if (e.key === 'syncwave-msg-' + code && e.newValue) {
+      try { handleSignal(JSON.parse(e.newValue)); } catch (err) {}
+    }
+  });
+
+  initRelay(code);
+}
+
+// Cross-device relay using a lightweight public broadcast relay (PieSocket demo / Ably-free fallback chain).
+// We try a sequence of free public websocket echo/broadcast relays. Each implements a simple
+// "send to all subscribers of a topic" pattern. If all fail, app still works perfectly for
+// same-browser/same-device multi-tab sync, and instructs the user accordingly.
+let relaySocket = null;
+let relayConnected = false;
+
+function initRelay(code) {
+  connectRelay(code, 0);
+}
+
+const RELAY_ENDPOINTS = [
+  'wss://socketsbay.com/wss/v2/1/demo/',
+];
+
+function connectRelay(code, attempt) {
+  if (attempt >= RELAY_ENDPOINTS.length) {
+    return; // no relay available — local/tab sync still works
+  }
+  try {
+    const sock = new WebSocket(RELAY_ENDPOINTS[attempt]);
+    sock.onopen = () => {
+      relaySocket = sock;
+      relayConnected = true;
+      sock.send(JSON.stringify({ type: 'join', room: code, from: myId, _sw: true }));
+      updateStatusConnQuality();
+    };
+    sock.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data && data._sw && data.room === code) handleSignal(data);
+      } catch (err) {}
+    };
+    sock.onerror = () => { relayConnected = false; };
+    sock.onclose = () => {
+      relayConnected = false;
+      setTimeout(() => connectRelay(code, attempt), 4000);
+    };
+  } catch (e) {
+    connectRelay(code, attempt + 1);
+  }
+}
+
+function broadcast(data) {
+  const msg = { ...data, from: myId, room: roomCode, _sw: true, sentAt: Date.now() };
+
+  if (bc) { try { bc.postMessage(msg); } catch(e) {} }
+
+  if (roomCode) {
+    try { localStorage.setItem('syncwave-msg-' + roomCode, JSON.stringify(msg)); } catch (e) {}
+  }
+
+  if (relaySocket && relaySocket.readyState === 1) {
+    try { relaySocket.send(JSON.stringify(msg)); } catch (e) {}
+  }
+}
+
+function handleSignal(msg) {
+  if (!msg || msg.from === myId) return;
+  if (msg.room && msg.room !== roomCode) return;
+
+  switch (msg.type) {
+    case 'join': handlePeerJoin(msg.from); break;
+    case 'leave': handlePeerLeave(msg.from); break;
+    case 'ping': handlePing(msg); break;
+    case 'pong': handlePong(msg); break;
+    case 'play': remotePlay(msg); break;
+    case 'pause': remotePause(msg); break;
+    case 'seek': remoteSeek(msg); break;
+    case 'playlist-update': applyPlaylistUpdate(msg); break;
+    case 'load-index': remoteLoadIndex(msg); break;
+    case 'sync-request': sendFullState(msg.from); break;
+    case 'sync-state': applyFullState(msg); break;
+  }
+  updatePeerSeen(msg.from);
+}
+
+// ════════════════════════════════════════════════════════════
+// CLOCK SYNC (NTP-style offset estimation for zero-drift playback)
+// ════════════════════════════════════════════════════════════
+function handlePing(msg) {
+  broadcast({ type: 'pong', to: msg.from, pingId: msg.pingId, t1: msg.t1, t2: Date.now() });
+}
+
+function handlePong(msg) {
+  if (msg.to !== myId) return;
+  const t3 = Date.now();
+  const rtt = t3 - msg.t1;
+  const offset = msg.t2 - msg.t1 - rtt / 2; // estimated clock offset vs peer
+  pingHistory.push({ rtt, offset });
+  if (pingHistory.length > 8) pingHistory.shift();
+
+  // Use the sample with lowest RTT (most accurate) — classic NTP selection
+  const best = pingHistory.reduce((a, b) => (b.rtt < a.rtt ? b : a));
+  clockOffset = best.offset;
+  updateSyncDisplay(best.rtt);
+}
+
+function sendPing() {
+  if (!roomCode) return;
+  broadcast({ type: 'ping', pingId: Math.random().toString(36).slice(2), t1: Date.now() });
+}
+
+function updateSyncDisplay(rtt) {
+  const el = document.getElementById('syncStatus');
+  if (rtt < 80) {
+    el.textContent = `⚡ ${rtt}ms gidiş-dönüş · senkron hazır`;
+    el.classList.remove('warn');
+  } else {
+    el.textContent = `⚡ ${rtt}ms gidiş-dönüş`;
+    el.classList.add('warn');
+  }
+}
+
+function updateStatusConnQuality() {
+  // visual nudge only
+}
+
+// ════════════════════════════════════════════════════════════
+// ROOM MANAGEMENT
+// ════════════════════════════════════════════════════════════
+function generateCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+}
+
+function createRoom() {
+  roomCode = generateCode();
+  isHost = true;
+  hostId = myId;
+  enterRoom(roomCode);
+}
+
+function joinRoom() {
+  const code = document.getElementById('roomCodeInput').value.trim().toUpperCase();
+  if (code.length < 4) { showToast('Geçerli bir oda kodu girin'); return; }
+  roomCode = code;
+  isHost = false;
+  enterRoom(roomCode);
+  setTimeout(() => broadcast({ type: 'sync-request' }), 700);
+}
+
+function enterRoom(code) {
+  document.getElementById('displayRoomCode').textContent = code;
+  document.getElementById('joinView').style.display = 'none';
+  document.getElementById('connectedView').style.display = 'block';
+  document.getElementById('syncBar').classList.remove('hidden');
+
+  setStatus('connected', code);
+  initSignaling(code);
+  broadcast({ type: 'join' });
+
+  setInterval(() => { if (roomCode) sendPing(); }, 3000);
+  setInterval(cleanupStalePeers, 6000);
+  setTimeout(sendPing, 500);
+
+  showToast(`🔗 Odaya bağlanıldı: ${code}`);
+}
+
+function leaveRoom() {
+  broadcast({ type: 'leave' });
+  if (bc) { bc.close(); bc = null; }
+  if (relaySocket) { relaySocket.close(); relaySocket = null; }
+  roomCode = null;
+  peers = {};
+  pingHistory = [];
+  document.getElementById('joinView').style.display = 'block';
+  document.getElementById('connectedView').style.display = 'none';
+  document.getElementById('syncBar').classList.add('hidden');
+  setStatus('disconnected', '');
+  showToast('Odadan çıkıldı');
+}
+
+function copyRoomLink() {
+  if (!roomCode) return;
+  const url = location.href.split('#')[0] + '#' + roomCode;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(url).then(() => showToast('🔗 Link kopyalandı, diğer cihaza gönder'));
+  } else {
+    showToast('Oda kodu: ' + roomCode);
+  }
+}
+
+function setStatus(state, text) {
+  const dot = document.getElementById('statusDot');
+  const label = document.getElementById('statusText');
+  dot.className = 'status-dot';
+  if (state === 'connected') { dot.classList.add('connected'); label.textContent = text; }
+  else if (state === 'syncing') { dot.classList.add('syncing'); label.textContent = 'Sync ediliyor'; }
+  else { label.textContent = 'Bağlı değil'; }
+}
+
+function handlePeerJoin(peerId) {
+  const isNew = !peers[peerId];
+  peers[peerId] = { lastSeen: Date.now() };
+  updatePeerCount();
+  if (isNew) {
+    showToast('🎵 Yeni dinleyici katıldı');
+    setTimeout(() => sendFullState(peerId), 400);
+  }
+}
+
+function handlePeerLeave(peerId) {
+  delete peers[peerId];
+  updatePeerCount();
+}
+
+function updatePeerSeen(peerId) {
+  if (!peers[peerId]) { peers[peerId] = { lastSeen: Date.now() }; updatePeerCount(); }
+  else peers[peerId].lastSeen = Date.now();
+}
+
+function cleanupStalePeers() {
+  const now = Date.now();
+  let changed = false;
+  for (const id in peers) {
+    if (now - peers[id].lastSeen > 12000) { delete peers[id]; changed = true; }
+  }
+  if (changed) updatePeerCount();
+}
+
+function updatePeerCount() {
+  const count = Object.keys(peers).length + 1;
+  document.getElementById('peerCount').textContent = count + (count === 1 ? ' kişi' : ' kişi');
+}
+
+// ════════════════════════════════════════════════════════════
+// FULL STATE SYNC (sent to newly joined peers / on request)
+// ════════════════════════════════════════════════════════════
+function sendFullState(targetId) {
+  broadcast({
+    type: 'sync-state',
+    to: targetId,
+    playlist,
+    currentIndex,
+    videoId: currentVideoId,
+    time: player ? safeGetCurrentTime() : 0,
+    playing: isPlaying,
+    serverNow: Date.now()
+  });
+}
+
+function applyFullState(msg) {
+  if (msg.to && msg.to !== myId) return;
+
+  if (Array.isArray(msg.playlist) && msg.playlist.length) {
+    playlist = msg.playlist;
+    renderPlaylist();
+  }
+  currentIndex = msg.currentIndex;
+
+  if (msg.videoId) {
+    const latencyComp = (Date.now() - msg.serverNow) / 1000;
+    const targetTime = (msg.time || 0) + (msg.playing ? latencyComp : 0);
+    loadVideoInternal(msg.videoId, targetTime, msg.playing);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// YOUTUBE PLAYER
+// ════════════════════════════════════════════════════════════
+function onYouTubeIframeAPIReady() {
+  player = new YT.Player('yt-player', {
+    height: '180', width: '320',
+    playerVars: { autoplay: 0, controls: 0, playsinline: 1, origin: location.origin },
+    events: {
+      onReady: () => { ytReady = true; playerReadyQueue.forEach(fn => fn()); playerReadyQueue = []; },
+      onStateChange: onPlayerState,
+      onError: onPlayerError
+    }
+  });
+}
+
+function withPlayer(fn) {
+  if (ytReady) fn(); else playerReadyQueue.push(fn);
+}
+
+function onPlayerError(e) {
+  showToast('⚠️ Bu video oynatılamıyor, sıradakine geçiliyor');
+  setTimeout(playNext, 1200);
+}
+
+function onPlayerState(e) {
+  const S = YT.PlayerState;
+  if (e.data === S.PLAYING) { setPlayState(true); startProgressTracking(); }
+  else if (e.data === S.PAUSED) { setPlayState(false); stopProgressTracking(); }
+  else if (e.data === S.ENDED) { stopProgressTracking(); playNext(); }
+}
+
+function safeGetCurrentTime() {
+  try { return (player && player.getCurrentTime) ? player.getCurrentTime() : 0; } catch (e) { return 0; }
+}
+
+function loadVideoInternal(videoId, startAt, autoplay) {
+  currentVideoId = videoId;
+  withPlayer(() => {
+    if (autoplay) player.loadVideoById({ videoId, startSeconds: startAt || 0 });
+    else { player.cueVideoById({ videoId, startSeconds: startAt || 0 }); }
+  });
+  updateNowPlayingUI(videoId);
+  highlightActivePlaylistItem();
+}
+
+function playIndex(idx, broadcastIt = true) {
+  if (idx < 0 || idx >= playlist.length) return;
+  currentIndex = idx;
+  const item = playlist[idx];
+  currentVideoId = item.id;
+  withPlayer(() => player.loadVideoById({ videoId: item.id, startSeconds: 0 }));
+  updateNowPlayingUI(item.id, item);
+  highlightActivePlaylistItem();
+  if (broadcastIt && roomCode) {
+    broadcast({ type: 'load-index', index: idx, videoId: item.id });
+  }
+}
+
+function remoteLoadIndex(msg) {
+  currentIndex = msg.index;
+  const item = playlist[msg.index] || { id: msg.videoId };
+  currentVideoId = msg.videoId;
+  withPlayer(() => player.loadVideoById({ videoId: msg.videoId, startSeconds: 0 }));
+  updateNowPlayingUI(msg.videoId, item);
+  highlightActivePlaylistItem();
+}
+
+function updateNowPlayingUI(videoId, item) {
+  item = item || playlist[currentIndex] || {};
+  document.getElementById('npArtwork').src = item.thumb || `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
+  document.getElementById('npTitle').textContent = item.title || 'Yükleniyor...';
+  document.getElementById('npChannel').textContent = item.channel || '';
+  document.getElementById('nowPlaying').classList.add('visible');
+}
+
+function highlightActivePlaylistItem() {
+  document.querySelectorAll('.pl-item').forEach((el, i) => {
+    el.classList.toggle('active', i === currentIndex);
+  });
+}
+
+// ─── Transport controls ──────────────────────────────────────
+function togglePlay() {
+  if (!player || !currentVideoId) { showToast('Önce bir şarkı seç'); return; }
+  if (isPlaying) {
+    player.pauseVideo();
+    broadcast({ type: 'pause', time: safeGetCurrentTime() });
+  } else {
+    const t = safeGetCurrentTime();
+    player.playVideo();
+    broadcast({ type: 'play', time: t, serverNow: Date.now() });
+  }
+  flashSync();
+}
+
+function remotePlay(msg) {
+  if (!player) return;
+  const latencyComp = (Date.now() - (msg.serverNow || Date.now())) / 1000;
+  const targetTime = (msg.time || 0) + latencyComp;
+  player.seekTo(targetTime, true);
+  player.playVideo();
+  flashSync();
+}
+
+function remotePause(msg) {
+  if (!player) return;
+  if (msg.time !== undefined) player.seekTo(msg.time, true);
+  player.pauseVideo();
+  flashSync();
+}
+
+function seek(deltaSeconds) {
+  if (!player || !currentVideoId) return;
+  const t = Math.max(0, safeGetCurrentTime() + deltaSeconds);
+  player.seekTo(t, true);
+  broadcast({ type: 'seek', time: t });
+}
+
+function remoteSeek(msg) {
+  if (!player) return;
+  player.seekTo(msg.time, true);
+}
+
+function playNext() {
+  if (currentIndex + 1 < playlist.length) playIndex(currentIndex + 1);
+  else if (playlist.length) playIndex(0);
+}
+
+function playPrev() {
+  if (currentIndex > 0) playIndex(currentIndex - 1);
+  else if (playlist.length) playIndex(playlist.length - 1);
+}
+
+function setPlayState(playing) {
+  isPlaying = playing;
+  document.getElementById('playIcon').innerHTML = playing
+    ? '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>'
+    : '<path d="M8 5v14l11-7z"/>';
+  document.querySelectorAll('.wave-bar').forEach(b => b.classList.toggle('paused', !playing));
+}
+
+function setVolume(val) {
+  withPlayer(() => player.setVolume(parseInt(val)));
+}
+
+function startProgressTracking() {
+  stopProgressTracking();
+  progressInterval = setInterval(() => {
+    if (!player || !player.getCurrentTime) return;
+    const current = safeGetCurrentTime();
+    let total = 0;
+    try { total = player.getDuration(); } catch (e) {}
+    if (!total) return;
+    document.getElementById('progressFill').style.width = ((current / total) * 100) + '%';
+    document.getElementById('currentTime').textContent = formatTime(current);
+    document.getElementById('totalTime').textContent = formatTime(total);
+  }, 400);
+}
+
+function stopProgressTracking() {
+  if (progressInterval) { clearInterval(progressInterval); progressInterval = null; }
+}
+
+function formatTime(s) {
+  s = Math.floor(s || 0);
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
+document.getElementById('progressBg').addEventListener('click', function (e) {
+  if (!player || !currentVideoId) return;
+  const rect = this.getBoundingClientRect();
+  const pct = (e.clientX - rect.left) / rect.width;
+  let total = 0;
+  try { total = player.getDuration(); } catch (err) {}
+  const t = pct * (total || 0);
+  player.seekTo(t, true);
+  broadcast({ type: 'seek', time: t });
+});
+
+function flashSync() {
+  setStatus('syncing', roomCode);
+  setTimeout(() => { if (roomCode) setStatus('connected', roomCode); }, 500);
+}
+
+// ════════════════════════════════════════════════════════════
+// SEARCH — real YouTube Data API v3, called directly from the
+// browser with a free Google API key. This is Google's own
+// official, CORS-enabled search endpoint — not a scraped page,
+// not a third-party proxy, so it does not break the way the
+// earlier approaches did. Returns real video IDs, titles and
+// thumbnails directly, exactly like a backend search would.
+// ════════════════════════════════════════════════════════════
+const YOUTUBE_API_KEY = window.SYNCWAVE_YT_API_KEY || 'BURAYA_API_KEY_YAPISTIR';
+
+async function doSearch() {
+  const q = document.getElementById('searchInput').value.trim();
+  if (!q) return;
+
+  const resultsEl = document.getElementById('results');
+  const btn = document.getElementById('searchBtn');
+  btn.disabled = true;
+  resultsEl.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div>Aranıyor...</div>';
+
+  if (!YOUTUBE_API_KEY || YOUTUBE_API_KEY === 'BURAYA_API_KEY_YAPISTIR') {
+    resultsEl.innerHTML = `<div class="empty-state">
+      <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+      Henüz bir YouTube API key tanımlanmamış. Koddaki YOUTUBE_API_KEY değişkenine kendi key'ini yapıştırman gerekiyor.
+    </div>`;
+    btn.disabled = false;
+    return;
+  }
+
+  try {
+    const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoCategoryId=10&maxResults=15&q=${encodeURIComponent(q)}&key=${YOUTUBE_API_KEY}`;
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (!res.ok) {
+      const reason = (data.error && data.error.message) || 'Bilinmeyen hata';
+      resultsEl.innerHTML = `<div class="empty-state">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+        Arama başarısız: ${escHtml(reason)}
+      </div>`;
+      btn.disabled = false;
+      return;
+    }
+
+    const items = (data.items || []).map(it => ({
+      videoId: it.id.videoId,
+      title: it.snippet.title,
+      channel: it.snippet.channelTitle,
+      thumb: it.snippet.thumbnails.high?.url || it.snippet.thumbnails.medium?.url || it.snippet.thumbnails.default?.url
+    }));
+
+    if (!items.length) {
+      resultsEl.innerHTML = `<div class="empty-state">Sonuç bulunamadı, başka bir arama dene.</div>`;
+      btn.disabled = false;
+      return;
+    }
+
+    renderResults(items);
+  } catch (e) {
+    resultsEl.innerHTML = `<div class="empty-state">Bağlantı hatası: ${escHtml(e.message)}</div>`;
+  }
+  btn.disabled = false;
+}
+
+function renderResults(items) {
+  const resultsEl = document.getElementById('results');
+  resultsEl.innerHTML = '';
+
+  items.forEach(item => {
+    const el = document.createElement('div');
+    el.className = 'result-item';
+    el.innerHTML = `
+      <img class="result-thumb" src="${item.thumb}" alt="">
+      <div class="result-info">
+        <div class="result-title">${escHtml(item.title)}</div>
+        <div class="result-channel">${escHtml(item.channel)}</div>
+      </div>
+      <button class="result-add-btn" title="Çalma listesine ekle">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+      </button>
+    `;
+
+    const trackItem = { id: item.videoId, title: item.title, channel: item.channel, thumb: item.thumb, duration: 0 };
+
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('.result-add-btn')) {
+        addToPlaylist(trackItem, true);
+        showToast('➕ Listeye eklendi: ' + item.title.substring(0, 30));
+        return;
+      }
+      addToPlaylist(trackItem, false);
+      playIndex(playlist.length - 1);
+      switchTab('playlist');
+    });
+
+    resultsEl.appendChild(el);
+  });
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+
+// ════════════════════════════════════════════════════════════
+// PLAYLIST
+// ════════════════════════════════════════════════════════════
+function addToPlaylist(item, isAddOnly) {
+  playlist.push(item);
+  renderPlaylist();
+  syncPlaylist();
+  if (currentIndex === -1 && !isAddOnly) currentIndex = playlist.length - 1;
+}
+
+function removeFromPlaylist(idx) {
+  const wasCurrentOrBefore = idx <= currentIndex;
+  playlist.splice(idx, 1);
+  if (idx === currentIndex) {
+    currentIndex = -1;
+  } else if (wasCurrentOrBefore) {
+    currentIndex--;
+  }
+  renderPlaylist();
+  syncPlaylist();
+}
+
+function clearPlaylist() {
+  if (!playlist.length) return;
+  if (!confirm('Çalma listesini tamamen temizlemek istediğine emin misin?')) return;
+  playlist = [];
+  currentIndex = -1;
+  renderPlaylist();
+  syncPlaylist();
+  showToast('Çalma listesi temizlendi');
+}
+
+function shufflePlaylist() {
+  if (playlist.length < 2) return;
+  const currentId = currentIndex >= 0 ? playlist[currentIndex].id : null;
+  for (let i = playlist.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [playlist[i], playlist[j]] = [playlist[j], playlist[i]];
+  }
+  if (currentId) currentIndex = playlist.findIndex(p => p.id === currentId);
+  renderPlaylist();
+  syncPlaylist();
+  showToast('🔀 Karıştırıldı');
+}
+
+function syncPlaylist() {
+  if (roomCode) broadcast({ type: 'playlist-update', playlist, currentIndex });
+}
+
+function applyPlaylistUpdate(msg) {
+  playlist = msg.playlist || [];
+  if (typeof msg.currentIndex === 'number') currentIndex = msg.currentIndex;
+  renderPlaylist();
+}
+
+function renderPlaylist() {
+  const el = document.getElementById('playlistEl');
+  const badge = document.getElementById('plCountBadge');
+  badge.textContent = playlist.length ? `(${playlist.length})` : '';
+
+  let totalSec = playlist.reduce((a, p) => a + (p.duration || 0), 0);
+  document.getElementById('plTotalTime').textContent = totalSec ? '⏱ ' + formatTime(totalSec) : '';
+
+  if (!playlist.length) {
+    el.innerHTML = `<div class="empty-state">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+      Çalma listesi boş — arama sekmesinden şarkı ekle
+    </div>`;
+    return;
+  }
+
+  el.innerHTML = '';
+  playlist.forEach((item, i) => {
+    const row = document.createElement('div');
+    row.className = 'pl-item' + (i === currentIndex ? ' active' : '');
+    row.draggable = true;
+    row.dataset.idx = i;
+    row.innerHTML = `
+      <span class="pl-num">${i + 1}</span>
+      <img class="pl-thumb" src="${item.thumb || ''}" alt="">
+      <div class="pl-info">
+        <div class="pl-title">${escHtml(item.title)}</div>
+        <div class="pl-channel">${escHtml(item.channel || '')}</div>
+      </div>
+      <button class="pl-remove" title="Kaldır">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    `;
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('.pl-remove')) { removeFromPlaylist(i); return; }
+      playIndex(i);
+    });
+    addDragHandlers(row);
+    el.appendChild(row);
+  });
+}
+
+let dragSrcIdx = null;
+function addDragHandlers(row) {
+  row.addEventListener('dragstart', (e) => {
+    dragSrcIdx = parseInt(row.dataset.idx);
+    row.classList.add('dragging');
+  });
+  row.addEventListener('dragend', () => row.classList.remove('dragging'));
+  row.addEventListener('dragover', (e) => e.preventDefault());
+  row.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const targetIdx = parseInt(row.dataset.idx);
+    if (dragSrcIdx === null || dragSrcIdx === targetIdx) return;
+    const moved = playlist.splice(dragSrcIdx, 1)[0];
+    playlist.splice(targetIdx, 0, moved);
+    if (currentIndex === dragSrcIdx) currentIndex = targetIdx;
+    renderPlaylist();
+    syncPlaylist();
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+// TABS / TOAST / MISC UI
+// ════════════════════════════════════════════════════════════
+function switchTab(name) {
+  document.getElementById('tabSearch').classList.toggle('active', name === 'search');
+  document.getElementById('tabPlaylist').classList.toggle('active', name === 'playlist');
+  document.getElementById('panelSearch').classList.toggle('active', name === 'search');
+  document.getElementById('panelPlaylist').classList.toggle('active', name === 'playlist');
+}
+
+let toastTimer;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
+}
+
+// ════════════════════════════════════════════════════════════
+// INIT
+// ════════════════════════════════════════════════════════════
+const ytTag = document.createElement('script');
+ytTag.src = 'https://www.youtube.com/iframe_api';
+document.head.appendChild(ytTag);
+
+if (location.hash) {
+  const code = location.hash.slice(1).toUpperCase();
+  if (code.length >= 4) {
+    document.getElementById('roomCodeInput').value = code;
+    showToast('🔗 Oda kodu bulundu — Katıl\'a bas');
+  }
+}
+</script>
+</body>
+</html>

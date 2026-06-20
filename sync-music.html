@@ -422,7 +422,7 @@ const ABLY_API_KEY = window.SYNCWAVE_ABLY_KEY || 'BURAYA_ABLY_KEY_YAPISTIR';
 let ablyClient = null;
 let ablyChannel = null;
 
-function initSignaling(code) {
+function initSignaling(code, onReady) {
   // Local-tab fast path: instant for two tabs on the same device.
   try {
     bc = new BroadcastChannel('syncwave-room-' + code);
@@ -431,11 +431,13 @@ function initSignaling(code) {
 
   if (!ABLY_API_KEY || ABLY_API_KEY === 'BURAYA_ABLY_KEY_YAPISTIR') {
     showToast('⚠️ Ably key tanımlı değil — sadece bu cihazda/sekmede senkron çalışır');
+    if (onReady) onReady();
     return;
   }
 
   if (typeof Ably === 'undefined') {
     showToast('⚠️ Ably kütüphanesi yüklenemedi, internet bağlantını kontrol et');
+    if (onReady) onReady();
     return;
   }
 
@@ -443,10 +445,21 @@ function initSignaling(code) {
     ablyClient = new Ably.Realtime({ key: ABLY_API_KEY, clientId: myId });
     ablyClient.connection.on('connected', () => setStatus('connected', roomCode));
     ablyClient.connection.on('failed', () => showToast('⚠️ Ably bağlantısı başarısız'));
+    ablyClient.connection.on('disconnected', () => showToast('⚠️ Bağlantı koptu, yeniden bağlanılıyor...'));
   }
 
   ablyChannel = ablyClient.channels.get('syncwave-room-' + code);
   ablyChannel.subscribe('msg', (message) => handleSignal(message.data));
+
+  // Wait until the channel is genuinely attached (the WebSocket handshake +
+  // channel attach can take a few hundred ms) before letting the caller send
+  // the 'join' broadcast — otherwise that very first message gets published
+  // into a channel nobody is attached to yet and silently disappears, which
+  // is exactly why peer count was stuck at 1.
+  ablyChannel.attach((err) => {
+    if (err) { showToast('⚠️ Odaya bağlanılamadı: ' + err.message); }
+    if (onReady) onReady();
+  });
 }
 
 function broadcast(data) {
@@ -467,6 +480,7 @@ function handleSignal(msg) {
 
   switch (msg.type) {
     case 'join': handlePeerJoin(msg.from); break;
+    case 'join-ack': handlePeerJoin(msg.from); break;
     case 'leave': handlePeerLeave(msg.from); break;
     case 'ping': handlePing(msg); break;
     case 'pong': handlePong(msg); break;
@@ -543,23 +557,27 @@ function joinRoom() {
   if (code.length < 4) { showToast('Geçerli bir oda kodu girin'); return; }
   roomCode = code;
   isHost = false;
-  enterRoom(roomCode);
-  setTimeout(() => broadcast({ type: 'sync-request' }), 700);
+  enterRoom(roomCode, () => broadcast({ type: 'sync-request' }));
 }
 
-function enterRoom(code) {
+function enterRoom(code, afterJoin) {
   document.getElementById('displayRoomCode').textContent = code;
   document.getElementById('joinView').style.display = 'none';
   document.getElementById('connectedView').style.display = 'block';
   document.getElementById('syncBar').classList.remove('hidden');
 
   setStatus('connected', code);
-  initSignaling(code);
-  broadcast({ type: 'join' });
+
+  initSignaling(code, () => {
+    // Only announce ourselves once the channel is actually attached —
+    // sending this too early was why the other device never saw us.
+    broadcast({ type: 'join' });
+    setTimeout(sendPing, 300);
+    if (afterJoin) setTimeout(afterJoin, 300);
+  });
 
   setInterval(() => { if (roomCode) sendPing(); }, 3000);
   setInterval(cleanupStalePeers, 6000);
-  setTimeout(sendPing, 500);
 
   showToast(`🔗 Odaya bağlanıldı: ${code}`);
 }
@@ -603,6 +621,7 @@ function handlePeerJoin(peerId) {
   updatePeerCount();
   if (isNew) {
     showToast('🎵 Yeni dinleyici katıldı');
+    broadcast({ type: 'join-ack' }); // let the new peer immediately know we're here too
     setTimeout(() => sendFullState(peerId), 400);
   }
 }

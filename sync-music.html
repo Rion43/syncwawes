@@ -516,6 +516,7 @@ function handleSignal(msg) {
     case 'load-index': remoteLoadIndex(msg); break;
     case 'sync-request': sendFullState(msg.from); break;
     case 'sync-state': applyFullState(msg); break;
+    case 'drift-check': handleDriftCheck(msg); break;
   }
   updatePeerSeen(msg.from);
 }
@@ -607,6 +608,7 @@ async function enterRoom(code) {
   broadcast({ type: 'join' });
   setStatus('connected', code);
   startPingLoop();
+  startDriftCorrection();
   showToast(`✅ Odaya bağlanıldı: ${code}`);
   return true;
 }
@@ -625,6 +627,7 @@ function leaveRoom() {
   if (bc) { bc.close(); bc = null; }
   if (ablyChannel) { ablyChannel.unsubscribe(); ablyChannel.detach(); ablyChannel = null; }
   ablyReady = false;
+  stopDriftCorrection();
   roomCode = null;
   peers = {};
   pingHistory = [];
@@ -715,7 +718,7 @@ function applyFullState(msg) {
   currentIndex = msg.currentIndex;
 
   if (msg.videoId) {
-    const latencyComp = (Date.now() - msg.serverNow) / 1000;
+    const latencyComp = (Date.now() - msg.serverNow - clockOffset) / 1000;
     const targetTime = (msg.time || 0) + (msg.playing ? latencyComp : 0);
     loadVideoInternal(msg.videoId, targetTime, msg.playing);
   }
@@ -747,9 +750,101 @@ function onPlayerError(e) {
 
 function onPlayerState(e) {
   const S = YT.PlayerState;
-  if (e.data === S.PLAYING) { setPlayState(true); startProgressTracking(); }
+  if (e.data === S.PLAYING) {
+    setPlayState(true);
+    startProgressTracking();
+    detectAdState();
+  }
   else if (e.data === S.PAUSED) { setPlayState(false); stopProgressTracking(); }
-  else if (e.data === S.ENDED) { stopProgressTracking(); playNext(); }
+  else if (e.data === S.ENDED) { stopProgressTracking(); if (!isInAd) playNext(); }
+  else if (e.data === S.BUFFERING) { /* normal — don't treat as desync */ }
+}
+
+// ════════════════════════════════════════════════════════════
+// AD DETECTION — YouTube ads play through the same IFrame player
+// and fire the same PLAYING state, but getDuration()/getVideoUrl()
+// differ from the actual track. Ads run independently and at
+// different lengths per device/region, which is exactly what was
+// causing the "split apart by several seconds" symptom: one phone
+// would get a 5s ad, the other a 15s ad or none at all, and the
+// app had no idea an ad was even happening, so it kept treating
+// elapsed ad time as if it were song playback time.
+// We can't fully suppress ads (that's a YouTube ToS/player limit),
+// but we CAN detect them and pause cross-device sync corrections
+// during them, then force a hard re-sync the moment the real video
+// starts — which stops ad-skew from ever reaching the music.
+// ════════════════════════════════════════════════════════════
+let isInAd = false;
+
+function detectAdState() {
+  try {
+    const url = player.getVideoUrl ? player.getVideoUrl() : '';
+    const data = player.getVideoData ? player.getVideoData() : null;
+    const playingAd = (data && data.video_id && currentVideoId && data.video_id !== currentVideoId);
+    if (playingAd && !isInAd) {
+      isInAd = true;
+      showToast('📺 Reklam oynuyor — senkron reklam bitince düzelecek');
+    } else if (!playingAd && isInAd) {
+      isInAd = false;
+      // The real track just started (or resumed) right after an ad —
+      // force everyone back onto the same timestamp immediately instead
+      // of waiting for the next periodic correction.
+      if (isHost) broadcastAuthoritativeState();
+    }
+  } catch (e) {}
+}
+
+// ════════════════════════════════════════════════════════════
+// CONTINUOUS DRIFT CORRECTION — the missing piece that let gaps
+// grow to 3s, 9s, etc. over time. The host broadcasts its real
+// playback position every few seconds; every other peer compares
+// that to its own position (after compensating for network delay
+// via clockOffset) and silently seeks back in line if the drift
+// exceeds a small tolerance. This runs continuously, so small
+// errors (buffering hiccups, YouTube's own internal jitter, ad
+// length differences) get corrected automatically instead of
+// accumulating.
+// ════════════════════════════════════════════════════════════
+const DRIFT_TOLERANCE_SEC = 1.0; // don't correct tiny, inaudible differences
+let driftCorrectionTimer = null;
+
+function startDriftCorrection() {
+  stopDriftCorrection();
+  driftCorrectionTimer = setInterval(() => {
+    if (!roomCode || !ablyReady) return;
+    if (isHost && isPlaying && !isInAd) broadcastAuthoritativeState();
+  }, 4000);
+}
+
+function stopDriftCorrection() {
+  if (driftCorrectionTimer) { clearInterval(driftCorrectionTimer); driftCorrectionTimer = null; }
+}
+
+function broadcastAuthoritativeState() {
+  if (!player || isInAd) return;
+  broadcast({
+    type: 'drift-check',
+    videoId: currentVideoId,
+    time: safeGetCurrentTime(),
+    playing: isPlaying,
+    serverNow: Date.now()
+  });
+}
+
+function handleDriftCheck(msg) {
+  if (isInAd || !player || !currentVideoId) return; // never correct against ad-skewed local state
+  if (msg.videoId !== currentVideoId) return; // different track entirely — a load-index will fix this separately
+
+  const latencyComp = (Date.now() - msg.serverNow - clockOffset) / 1000;
+  const expectedTime = msg.time + (msg.playing ? latencyComp : 0);
+  const actualTime = safeGetCurrentTime();
+  const drift = Math.abs(actualTime - expectedTime);
+
+  if (drift > DRIFT_TOLERANCE_SEC) {
+    player.seekTo(expectedTime, true);
+    if (msg.playing && !isPlaying) player.playVideo();
+    if (!msg.playing && isPlaying) player.pauseVideo();
+  }
 }
 
 function safeGetCurrentTime() {
@@ -771,11 +866,16 @@ function playIndex(idx, broadcastIt = true) {
   currentIndex = idx;
   const item = playlist[idx];
   currentVideoId = item.id;
+  isInAd = false; // reset ad-tracking state — we're on a fresh track now
   withPlayer(() => player.loadVideoById({ videoId: item.id, startSeconds: 0 }));
   updateNowPlayingUI(item.id, item);
   highlightActivePlaylistItem();
   if (broadcastIt && roomCode) {
-    broadcast({ type: 'load-index', index: idx, videoId: item.id });
+    // Include a timestamp so the receiver can compensate for the delay
+    // between this device starting the track and the message arriving —
+    // without this, every device's "start of song" landed at a slightly
+    // different real-world moment, which is part of what caused drift.
+    broadcast({ type: 'load-index', index: idx, videoId: item.id, serverNow: Date.now() });
   }
 }
 
@@ -783,7 +883,15 @@ function remoteLoadIndex(msg) {
   currentIndex = msg.index;
   const item = playlist[msg.index] || { id: msg.videoId };
   currentVideoId = msg.videoId;
-  withPlayer(() => player.loadVideoById({ videoId: msg.videoId, startSeconds: 0 }));
+  isInAd = false; // reset ad-tracking state — we're on a fresh track now
+
+  // Compensate for the time this message spent in transit: if it took
+  // 300ms to arrive, start 300ms into the track rather than at 0, so
+  // everyone's "now" lines up instead of each device starting its own
+  // independent clock at slightly different real moments.
+  const transitDelaySec = msg.serverNow ? Math.max(0, (Date.now() - msg.serverNow - clockOffset) / 1000) : 0;
+
+  withPlayer(() => player.loadVideoById({ videoId: msg.videoId, startSeconds: transitDelaySec }));
   updateNowPlayingUI(msg.videoId, item);
   highlightActivePlaylistItem();
 }
@@ -818,7 +926,12 @@ function togglePlay() {
 
 function remotePlay(msg) {
   if (!player) return;
-  const latencyComp = (Date.now() - (msg.serverNow || Date.now())) / 1000;
+  // IMPORTANT: clockOffset must be subtracted here — without it, any
+  // difference between the two devices' clocks (which is exactly what
+  // the ping/pong measurement exists to find) was being silently
+  // ignored, so "play" always landed slightly off on devices whose
+  // clock ran ahead or behind the sender's.
+  const latencyComp = (Date.now() - (msg.serverNow || Date.now()) - clockOffset) / 1000;
   const targetTime = (msg.time || 0) + latencyComp;
   player.seekTo(targetTime, true);
   player.playVideo();
@@ -903,6 +1016,10 @@ document.getElementById('progressBg').addEventListener('click', function (e) {
 function flashSync() {
   setStatus('syncing', roomCode);
   setTimeout(() => { if (roomCode) setStatus('connected', roomCode); }, 500);
+  // Beyond the cosmetic indicator, also trigger a real correction pass
+  // shortly after any play/pause action, since that's exactly when two
+  // devices are most likely to have landed at slightly different times.
+  if (isHost) setTimeout(broadcastAuthoritativeState, 600);
 }
 
 // ════════════════════════════════════════════════════════════

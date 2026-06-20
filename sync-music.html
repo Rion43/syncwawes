@@ -368,6 +368,7 @@
   </div>
 </div>
 
+<script src="https://cdn.ably.com/lib/ably.min-2.js"></script>
 <div id="yt-player"></div>
 <div class="toast" id="toast"></div>
 
@@ -380,6 +381,13 @@
 // adım adım nasıl alınacağı anlatılıyor.
 // ════════════════════════════════════════════════════════════
 window.SYNCWAVE_YT_API_KEY = "AIzaSyBXHf9h54dvyEor0KrOAqYcdR8TDJxqeNo";
+
+// ════════════════════════════════════════════════════════════
+// ⚠️ BURAYA KENDİ ABLY API KEY'İNİ YAPIŞTIR (ably.com'dan
+// ücretsiz aldığın key) — gerçek anlık cihazlar arası senkron
+// için gerekli.
+// ════════════════════════════════════════════════════════════
+window.SYNCWAVE_ABLY_KEY = "3p1oIQ.AMvYNw:APgyWmh3bBvv-YroEnj67IO5GktkICgG3Wytaz0YPr4";
 
 // ════════════════════════════════════════════════════════════
 // STATE
@@ -403,98 +411,53 @@ let bc = null;
 let suppressLocalEvents = false; // true while applying a remote command, to avoid feedback loop
 
 // ════════════════════════════════════════════════════════════
-// SIGNALING — real cross-device sync via MantleDB, a free,
-// account-free JSON key-value store with CORS enabled. Each
-// device polls a shared namespace (keyed by the room code) for
-// new messages every 1.5s, and pushes its own messages there too.
-// This is not as instant as a WebSocket, but it actually works
-// between two different physical devices with zero setup —
-// no account, no server, no deploy — which is what kept failing
-// with the local-only BroadcastChannel/localStorage approach.
+// SIGNALING — real cross-device, low-latency sync via Ably's
+// WebSocket Pub/Sub. This replaces the earlier HTTP-polling
+// approach (which had a ~1.5s lag baked in by design) with an
+// actual persistent connection: messages arrive in tens of
+// milliseconds, not seconds, which is what real sync needs.
 // ════════════════════════════════════════════════════════════
-const MANTLE_BASE = 'https://mantledb.sh/v2';
-const MANTLE_NS = 'syncwave-rooms';
+const ABLY_API_KEY = window.SYNCWAVE_ABLY_KEY || 'BURAYA_ABLY_KEY_YAPISTIR';
 
-let pollTimer = null;
-let lastSeenMsgId = 0;
-let outboxSeq = 0;
-
-function mantlePath(code) {
-  return `${MANTLE_BASE}/${MANTLE_NS}/room-${code}`;
-}
+let ablyClient = null;
+let ablyChannel = null;
 
 function initSignaling(code) {
-  // Local-tab fast path: still useful if you open two tabs on the
-  // same device — instant, no network round trip needed for that case.
+  // Local-tab fast path: instant for two tabs on the same device.
   try {
     bc = new BroadcastChannel('syncwave-room-' + code);
     bc.onmessage = (e) => handleSignal(e.data);
   } catch (e) {}
 
-  // Make sure the room's message log exists so polling doesn't 404 forever.
-  fetch(mantlePath(code), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages: [] })
-  }).catch(() => {});
-
-  startPolling(code);
-}
-
-function startPolling(code) {
-  stopPolling();
-  pollTimer = setInterval(() => pollRoom(code), 1500);
-  pollRoom(code); // immediate first check
-}
-
-function stopPolling() {
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-}
-
-async function pollRoom(code) {
-  if (!roomCode || roomCode !== code) return;
-  try {
-    const res = await fetch(mantlePath(code));
-    if (!res.ok) return;
-    const data = await res.json();
-    const messages = Array.isArray(data.messages) ? data.messages : [];
-
-    for (const msg of messages) {
-      if (msg.id > lastSeenMsgId) {
-        lastSeenMsgId = msg.id;
-        handleSignal(msg);
-      }
-    }
-  } catch (e) {
-    // Network hiccup — next poll cycle will catch up, no need to surface this.
+  if (!ABLY_API_KEY || ABLY_API_KEY === 'BURAYA_ABLY_KEY_YAPISTIR') {
+    showToast('⚠️ Ably key tanımlı değil — sadece bu cihazda/sekmede senkron çalışır');
+    return;
   }
+
+  if (typeof Ably === 'undefined') {
+    showToast('⚠️ Ably kütüphanesi yüklenemedi, internet bağlantını kontrol et');
+    return;
+  }
+
+  if (!ablyClient) {
+    ablyClient = new Ably.Realtime({ key: ABLY_API_KEY, clientId: myId });
+    ablyClient.connection.on('connected', () => setStatus('connected', roomCode));
+    ablyClient.connection.on('failed', () => showToast('⚠️ Ably bağlantısı başarısız'));
+  }
+
+  ablyChannel = ablyClient.channels.get('syncwave-room-' + code);
+  ablyChannel.subscribe('msg', (message) => handleSignal(message.data));
 }
 
-async function broadcast(data) {
-  const msg = { ...data, from: myId, room: roomCode, _sw: true, sentAt: Date.now(), id: Date.now() * 1000 + (outboxSeq++ % 1000) };
+function broadcast(data) {
+  const msg = { ...data, from: myId, room: roomCode, _sw: true, sentAt: Date.now() };
 
-  // Local tab fast-path
+  // Local tab fast-path (zero network hop for same-device tabs).
   if (bc) { try { bc.postMessage(msg); } catch (e) {} }
 
-  if (!roomCode) return;
-
-  // Push to the shared room log on MantleDB so other devices' polling picks it up.
-  try {
-    const res = await fetch(mantlePath(roomCode));
-    let existing = [];
-    if (res.ok) {
-      const data = await res.json();
-      existing = Array.isArray(data.messages) ? data.messages : [];
-    }
-    // Keep the log bounded — only the most recent 40 messages matter for sync.
-    const updated = [...existing, msg].slice(-40);
-    await fetch(mantlePath(roomCode), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: updated })
-    });
-  } catch (e) {
-    // If the push fails, local tabs still got it via BroadcastChannel above.
+  // Real cross-device push via Ably WebSocket — this is the actual sync path.
+  if (ablyChannel) {
+    try { ablyChannel.publish('msg', msg); } catch (e) {}
   }
 }
 
@@ -517,6 +480,7 @@ function handleSignal(msg) {
   }
   updatePeerSeen(msg.from);
 }
+
 
 // ════════════════════════════════════════════════════════════
 // CLOCK SYNC (NTP-style offset estimation for zero-drift playback)
@@ -603,8 +567,7 @@ function enterRoom(code) {
 function leaveRoom() {
   broadcast({ type: 'leave' });
   if (bc) { bc.close(); bc = null; }
-  stopPolling();
-  lastSeenMsgId = 0;
+  if (ablyChannel) { ablyChannel.unsubscribe(); ablyChannel.detach(); ablyChannel = null; }
   roomCode = null;
   peers = {};
   pingHistory = [];

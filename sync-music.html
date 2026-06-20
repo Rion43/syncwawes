@@ -412,18 +412,27 @@ let suppressLocalEvents = false; // true while applying a remote command, to avo
 
 // ════════════════════════════════════════════════════════════
 // SIGNALING — real cross-device, low-latency sync via Ably's
-// WebSocket Pub/Sub. This replaces the earlier HTTP-polling
-// approach (which had a ~1.5s lag baked in by design) with an
-// actual persistent connection: messages arrive in tens of
-// milliseconds, not seconds, which is what real sync needs.
+// WebSocket Pub/Sub.
+//
+// IMPORTANT FIX: the previous version called channel.subscribe()
+// before channel.attach() resolved. This is a known Ably SDK
+// pitfall — calling subscribe() triggers an *implicit* attach
+// that can silently fail to fully complete before messages are
+// sent, causing the channel to miss the very first messages
+// (exactly the "stuck at 1 person" symptom). The fix is to
+// explicitly await attach() FIRST, and only call subscribe()
+// once attach has genuinely resolved.
 // ════════════════════════════════════════════════════════════
 const ABLY_API_KEY = window.SYNCWAVE_ABLY_KEY || 'BURAYA_ABLY_KEY_YAPISTIR';
 
 let ablyClient = null;
 let ablyChannel = null;
+let ablyReady = false;
 
-function initSignaling(code, onReady) {
-  // Local-tab fast path: instant for two tabs on the same device.
+async function initSignaling(code) {
+  ablyReady = false;
+
+  // Local-tab fast path: instant for two tabs on the same device/browser.
   try {
     bc = new BroadcastChannel('syncwave-room-' + code);
     bc.onmessage = (e) => handleSignal(e.data);
@@ -431,35 +440,51 @@ function initSignaling(code, onReady) {
 
   if (!ABLY_API_KEY || ABLY_API_KEY === 'BURAYA_ABLY_KEY_YAPISTIR') {
     showToast('⚠️ Ably key tanımlı değil — sadece bu cihazda/sekmede senkron çalışır');
-    if (onReady) onReady();
-    return;
+    return false;
   }
 
   if (typeof Ably === 'undefined') {
-    showToast('⚠️ Ably kütüphanesi yüklenemedi, internet bağlantını kontrol et');
-    if (onReady) onReady();
-    return;
+    showToast('⚠️ Ably kütüphanesi yüklenemedi — internet bağlantını kontrol et');
+    return false;
   }
 
-  if (!ablyClient) {
-    ablyClient = new Ably.Realtime({ key: ABLY_API_KEY, clientId: myId });
-    ablyClient.connection.on('connected', () => setStatus('connected', roomCode));
-    ablyClient.connection.on('failed', () => showToast('⚠️ Ably bağlantısı başarısız'));
-    ablyClient.connection.on('disconnected', () => showToast('⚠️ Bağlantı koptu, yeniden bağlanılıyor...'));
+  try {
+    if (!ablyClient) {
+      ablyClient = new Ably.Realtime({ key: ABLY_API_KEY, clientId: myId });
+
+      ablyClient.connection.on('connected', () => {
+        if (roomCode) setStatus('connected', roomCode);
+      });
+      ablyClient.connection.on('disconnected', () => showToast('⚠️ Bağlantı koptu, yeniden bağlanılıyor...'));
+      ablyClient.connection.on('suspended', () => showToast('⚠️ Bağlantı askıda, internet bağlantını kontrol et'));
+      ablyClient.connection.on('failed', (stateChange) => {
+        const reason = stateChange && stateChange.reason ? stateChange.reason.message : 'bilinmeyen hata';
+        showToast('⚠️ Ably bağlantı hatası: ' + reason);
+      });
+
+      // Wait for the actual connection handshake to complete before doing
+      // anything else — publishing/attaching too early was part of the bug.
+      await ablyClient.connection.once('connected');
+    } else if (ablyClient.connection.state !== 'connected') {
+      await ablyClient.connection.once('connected');
+    }
+
+    ablyChannel = ablyClient.channels.get('syncwave-room-' + code);
+
+    // Explicitly attach FIRST and wait for it to genuinely resolve.
+    await ablyChannel.attach();
+
+    // Only now register the message listener — by this point the channel
+    // is guaranteed to be in the 'attached' state, so no messages get lost.
+    ablyChannel.subscribe('msg', (message) => handleSignal(message.data));
+
+    ablyReady = true;
+    return true;
+  } catch (err) {
+    const reason = (err && err.message) || String(err);
+    showToast('⚠️ Odaya bağlanılamadı: ' + reason);
+    return false;
   }
-
-  ablyChannel = ablyClient.channels.get('syncwave-room-' + code);
-  ablyChannel.subscribe('msg', (message) => handleSignal(message.data));
-
-  // Wait until the channel is genuinely attached (the WebSocket handshake +
-  // channel attach can take a few hundred ms) before letting the caller send
-  // the 'join' broadcast — otherwise that very first message gets published
-  // into a channel nobody is attached to yet and silently disappears, which
-  // is exactly why peer count was stuck at 1.
-  ablyChannel.attach((err) => {
-    if (err) { showToast('⚠️ Odaya bağlanılamadı: ' + err.message); }
-    if (onReady) onReady();
-  });
 }
 
 function broadcast(data) {
@@ -545,47 +570,61 @@ function generateCode() {
   return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
 }
 
-function createRoom() {
+async function createRoom() {
   roomCode = generateCode();
   isHost = true;
   hostId = myId;
-  enterRoom(roomCode);
+  await enterRoom(roomCode);
 }
 
-function joinRoom() {
+async function joinRoom() {
   const code = document.getElementById('roomCodeInput').value.trim().toUpperCase();
   if (code.length < 4) { showToast('Geçerli bir oda kodu girin'); return; }
   roomCode = code;
   isHost = false;
-  enterRoom(roomCode, () => broadcast({ type: 'sync-request' }));
+  const ok = await enterRoom(roomCode);
+  if (ok) broadcast({ type: 'sync-request' });
 }
 
-function enterRoom(code, afterJoin) {
+async function enterRoom(code) {
   document.getElementById('displayRoomCode').textContent = code;
   document.getElementById('joinView').style.display = 'none';
   document.getElementById('connectedView').style.display = 'block';
   document.getElementById('syncBar').classList.remove('hidden');
 
+  setStatus('syncing', code);
+  showToast('🔗 Odaya bağlanılıyor...');
+
+  const connected = await initSignaling(code);
+
+  if (!connected) {
+    // Local-only fallback still works for same-device/multi-tab testing.
+    setStatus('connected', code + ' (yalnız bu cihaz)');
+    return false;
+  }
+
+  // The channel is now genuinely attached — safe to announce ourselves.
+  broadcast({ type: 'join' });
   setStatus('connected', code);
+  startPingLoop();
+  showToast(`✅ Odaya bağlanıldı: ${code}`);
+  return true;
+}
 
-  initSignaling(code, () => {
-    // Only announce ourselves once the channel is actually attached —
-    // sending this too early was why the other device never saw us.
-    broadcast({ type: 'join' });
-    setTimeout(sendPing, 300);
-    if (afterJoin) setTimeout(afterJoin, 300);
-  });
-
-  setInterval(() => { if (roomCode) sendPing(); }, 3000);
+let pingLoopStarted = false;
+function startPingLoop() {
+  sendPing();
+  if (pingLoopStarted) return;
+  pingLoopStarted = true;
+  setInterval(() => { if (roomCode && ablyReady) sendPing(); }, 3000);
   setInterval(cleanupStalePeers, 6000);
-
-  showToast(`🔗 Odaya bağlanıldı: ${code}`);
 }
 
 function leaveRoom() {
   broadcast({ type: 'leave' });
   if (bc) { bc.close(); bc = null; }
   if (ablyChannel) { ablyChannel.unsubscribe(); ablyChannel.detach(); ablyChannel = null; }
+  ablyReady = false;
   roomCode = null;
   peers = {};
   pingHistory = [];
